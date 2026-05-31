@@ -1,0 +1,87 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# FastAPI / Uvicorn logs
+*.log
+logs/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Pip / Poetry / Pipenv
+pip-wheel-metadata/
+poetry.lock
+Pipfile.lock
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# MyPy / Ruff / Pyright
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database files
+*.sqlite3
+*.sqlite
+*.db
+
+# Alembic
+# Keep migration scripts, ignore only cache
+alembic/**/__pycache__/
+
+# Uploaded/static generated files
+uploads/
+media/
+
+# Local development
+local_settings.py
+
+# Docker
+.dockerignore
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Celery / Redis / task queues
+celerybeat-schedule
+celerybeat.pid
+
+# Gunicorn
+gunicorn.pid
+
+# Test reports
+reports/
+test-results/
