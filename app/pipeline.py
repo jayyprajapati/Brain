@@ -3,28 +3,70 @@ from __future__ import annotations
 
 from typing import AsyncIterator
 
+import numpy as np
+
 from . import embeddings, llm, reranker, vectorstore
 from .chunking import chunk_text
 from .config import settings
 from .prompts import QUERY_REWRITE_PROMPT, build_chat_system
 from .schemas import Message
 
+# Payload keys Brain owns — caller metadata may never override these.
+_RESERVED_KEYS = {"text", "heading", "urls", "chunk_index", "doc_id", "namespace"}
 
-def ingest(app_name: str, doc_id: str, text: str) -> int:
-    """Replace a document: ensure the app's collection, wipe its old chunks, then
-    chunk → embed → upsert the new ones."""
+
+def _cosine(a: np.ndarray, b: np.ndarray) -> float:
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    return float(np.dot(a, b) / denom) if denom else 0.0
+
+
+def ingest(
+    app_name: str,
+    doc_id: str,
+    text: str,
+    namespace: str | None = None,
+    dedup: bool = False,
+    metadata: dict | None = None,
+) -> dict:
+    """Replace a document: ensure the app's collection, wipe this doc's old chunks,
+    then chunk → embed → (optionally dedup) → upsert.
+
+    With ``dedup`` + ``namespace``, a candidate chunk is skipped when it is a near
+    duplicate (cosine ≥ ``DEDUP_THRESHOLD``) of an already-stored chunk in the
+    same namespace or of an earlier chunk accepted in this same batch — so
+    overlapping resume versions don't pile up redundant vectors."""
     vectorstore.ensure_collection(app_name, embeddings.vector_size())
-    vectorstore.delete(app_name, doc_id)
+    vectorstore.delete(app_name, doc_id=doc_id)
     chunks = chunk_text(text)
     if not chunks:
-        return 0
+        return {"chunk_count": 0, "skipped_duplicates": 0}
+
     vectors = embeddings.embed_documents([c.text for c in chunks])
-    payloads = [
-        {"text": c.text, "heading": c.heading, "urls": c.urls, "chunk_index": c.chunk_index}
-        for c in chunks
-    ]
-    vectorstore.upsert(app_name, doc_id, vectors, payloads)
-    return len(chunks)
+    extra = {k: v for k, v in (metadata or {}).items() if k not in _RESERVED_KEYS}
+
+    kept_vectors: list = []
+    kept_payloads: list[dict] = []
+    accepted: list[np.ndarray] = []  # in-batch dedup
+    skipped = 0
+
+    for chunk, vec in zip(chunks, vectors):
+        if dedup and namespace:
+            v = np.asarray(vec, dtype=float)
+            if vectorstore.max_similarity(app_name, vec, namespace) >= settings.dedup_threshold:
+                skipped += 1
+                continue
+            if any(_cosine(v, a) >= settings.dedup_threshold for a in accepted):
+                skipped += 1
+                continue
+            accepted.append(v)
+        kept_vectors.append(vec)
+        kept_payloads.append(
+            {**extra, "text": chunk.text, "heading": chunk.heading, "urls": chunk.urls, "chunk_index": chunk.chunk_index}
+        )
+
+    if kept_vectors:
+        vectorstore.upsert(app_name, doc_id, kept_vectors, kept_payloads, namespace=namespace)
+    return {"chunk_count": len(kept_vectors), "skipped_duplicates": skipped}
 
 
 def _last_user_message(messages: list[Message]) -> str:
@@ -52,12 +94,19 @@ async def contextualize(messages: list[Message], model: str | None = None) -> st
         return latest
 
 
-def retrieve(app_name: str, search_query: str, doc_ids: list[str] | None) -> list:
+def retrieve(
+    app_name: str,
+    search_query: str,
+    doc_ids: list[str] | None,
+    namespace: str | None = None,
+    top_k: int | None = None,
+) -> list:
     """Embed → vector search (top-K) → cross-encoder rerank → top-N."""
     if not search_query:
         return []
     query_vec = embeddings.embed_query(search_query)
-    hits = vectorstore.search(app_name, query_vec, doc_ids, settings.retrieve_top_k)
+    limit = top_k or settings.retrieve_top_k
+    hits = vectorstore.search(app_name, query_vec, doc_ids, limit, namespace=namespace)
     if not hits:
         return []
     scores = reranker.rerank(search_query, [h.text for h in hits])

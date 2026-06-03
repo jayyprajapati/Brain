@@ -7,3 +7,6 @@ httpx
 qdrant-client
 fastembed
 numpy
+python-multipart
+pypdf
+python-docx
