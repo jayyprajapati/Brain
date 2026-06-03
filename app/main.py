@@ -41,7 +41,14 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Brain", version="2.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Brain",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 
 def _llm_dict(req_llm) -> dict | None:
