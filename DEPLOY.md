@@ -2,7 +2,8 @@
 
 This guide walks through deploying the Brain FastAPI service to a fresh
 DigitalOcean droplet, fronted by Nginx with a Let's Encrypt TLS cert and
-managed by `systemd`.
+managed by `systemd`. The service runs as `root` from `/root/Brain` — fine
+for a single-purpose droplet.
 
 Brain is a thin stateless API — Qdrant Cloud and Ollama Cloud are external,
 so the droplet only runs the Python process. The first start downloads the
@@ -21,54 +22,64 @@ In the DigitalOcean dashboard:
 - **Auth:** SSH key (paste your public key).
 - **Hostname:** e.g. `brain-prod`.
 
-Once it boots, note the public IPv4. Point an A record at it
-(e.g. `brain.yourdomain.com`) — you'll need this for TLS later.
+Once it boots, note the public IPv4. In your DNS provider (this project
+uses **Cloudflare**), add an A record pointing `brain.jayprajapati.dev` at
+the droplet IP:
+
+- **Type:** A
+- **Name:** `brain`
+- **IPv4:** `<droplet public IP>`
+- **Proxy status:** **DNS only** (gray cloud) — required for the initial
+  Let's Encrypt HTTP-01 challenge. You can flip it to proxied later if you
+  also switch Cloudflare SSL mode to **Full (strict)**.
+
+Verify before continuing:
+
+```bash
+dig +short brain.jayprajapati.dev
+```
+
+Should print the droplet IP. If you get nothing or a `172.x.x.x` (Cloudflare
+edge), wait a minute or fix the proxy status.
 
 ---
 
 ## 2. Initial server hardening
 
-SSH in as root, then create a non-root user and lock things down:
+SSH in as root and set up the firewall:
 
 ```bash
 ssh root@<droplet-ip>
-
-adduser brain
-usermod -aG sudo brain
-rsync --archive --chown=brain:brain ~/.ssh /home/brain
 
 ufw allow OpenSSH
 ufw allow 80
 ufw allow 443
 ufw enable
 
-# Disable root SSH and password auth
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+# Lock SSH to key auth only
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 systemctl restart ssh
 ```
-
-From here on, log in as `brain`: `ssh brain@<droplet-ip>`.
 
 ---
 
 ## 3. Install system dependencies
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3.12 python3.12-venv python3-pip \
-                    git nginx certbot python3-certbot-nginx
+apt update && apt upgrade -y
+apt install -y python3.12 python3.12-venv python3-pip \
+               git nginx certbot python3-certbot-nginx
 ```
 
 If the droplet has < 4 GB RAM, add a 2 GB swapfile so the first ONNX
 download doesn't get killed:
 
 ```bash
-sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
 ---
@@ -76,12 +87,9 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ## 4. Clone the repo and set up the venv
 
 ```bash
-sudo mkdir -p /opt/brain
-sudo chown brain:brain /opt/brain
-cd /opt/brain
-
-git clone <your-repo-url> .
-# or for a private repo, deploy key / PAT
+cd /root
+git clone <your-repo-url> Brain
+cd Brain
 
 python3.12 -m venv .venv
 source .venv/bin/activate
@@ -127,19 +135,23 @@ Do this once interactively so the first real request isn't a 60-second
 cold start (and so `systemd` doesn't think the service is hanging):
 
 ```bash
-python -c "from app.embeddings import embed_texts; embed_texts(['warmup'])"
-python -c "from app.reranker import rerank; rerank('q', [{'text':'a'}])"
+python -c "from app.embeddings import warmup; warmup()"
+python -c "from app.reranker import warmup; warmup()"
 ```
 
-This caches the ONNX files under `~/.cache/fastembed/`.
+This caches the ONNX files under `/root/.cache/fastembed/`.
 
 ---
 
 ## 7. Create the systemd service
 
+Open the unit file in nano and paste:
+
 ```bash
-sudo nano /etc/systemd/system/brain.service
+nano /etc/systemd/system/brain.service
 ```
+
+Paste this content (`Ctrl+O` → `Enter` to save, `Ctrl+X` to exit):
 
 ```ini
 [Unit]
@@ -148,63 +160,66 @@ After=network.target
 
 [Service]
 Type=simple
-User=brain
-Group=brain
-WorkingDirectory=/opt/brain
-EnvironmentFile=/opt/brain/.env
-ExecStart=/opt/brain/.venv/bin/uvicorn app.main:app \
-          --host 127.0.0.1 --port 8000 \
-          --workers 2 --proxy-headers --forwarded-allow-ips='*'
+User=root
+Group=root
+WorkingDirectory=/root/Brain
+EnvironmentFile=/root/Brain/.env
+ExecStart=/root/Brain/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8010 --workers 1 --proxy-headers --forwarded-allow-ips=*
 Restart=on-failure
 RestartSec=5
-# fastembed + Qdrant client buffers eat memory; cap if you want to be safe
-# MemoryMax=1500M
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+After saving, run `cat /etc/systemd/system/brain.service` to confirm every
+line starts flush-left with no leading spaces (some terminals add indent on
+paste — if that happened, re-open and fix).
+
 Worker count rule of thumb: **1 worker per GB of RAM**, capped at vCPU count.
-Each worker loads its own embedding model.
+Each worker loads its own embedding model. On a 2 GB / 1 vCPU droplet keep it
+at `--workers 1`; bump up on a larger droplet.
 
 Enable and start:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now brain
-sudo systemctl status brain
-journalctl -u brain -f   # tail logs
+systemctl daemon-reload
+systemctl enable --now brain
+systemctl status brain --no-pager
+journalctl -u brain -f   # tail logs (Ctrl-C to exit)
 ```
 
 Sanity check it's listening locally:
 
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8010/health
 ```
 
 ---
 
 ## 8. Nginx reverse proxy
 
+Open the config in nano:
+
 ```bash
-sudo nano /etc/nginx/sites-available/brain
+nano /etc/nginx/sites-available/brain
 ```
+
+Paste this (`Ctrl+O` → `Enter`, `Ctrl+X`):
 
 ```nginx
 server {
     listen 80;
-    server_name brain.yourdomain.com;
+    server_name brain.jayprajapati.dev;
 
-    # Allow large multipart uploads for /v1/extract
     client_max_body_size 25M;
 
-    # SSE needs buffering off and a long read timeout
     proxy_buffering off;
     proxy_cache off;
     proxy_read_timeout 600s;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8010;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -215,11 +230,13 @@ server {
 }
 ```
 
+Then enable it:
+
 ```bash
-sudo ln -s /etc/nginx/sites-available/brain /etc/nginx/sites-enabled/
-sudo rm /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl reload nginx
+ln -sf /etc/nginx/sites-available/brain /etc/nginx/sites-enabled/brain
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl reload nginx
 ```
 
 The SSE bits (`proxy_buffering off`, `Connection ''`, long timeout) are
@@ -229,32 +246,41 @@ essential — without them `/v1/chat` will hang or close early.
 
 ## 9. TLS with Let's Encrypt
 
+Make sure Cloudflare proxy is **off** (gray cloud) for the `brain` record
+before running this — otherwise the HTTP-01 challenge hits Cloudflare's
+edge instead of your droplet and fails with an auth error.
+
 ```bash
-sudo certbot --nginx -d brain.yourdomain.com
+certbot --nginx -d brain.jayprajapati.dev
 ```
 
 Certbot rewrites the Nginx config to listen on 443 and sets up a renewal
 timer. Verify:
 
 ```bash
-curl https://brain.yourdomain.com/health
-sudo systemctl list-timers | grep certbot
+curl https://brain.jayprajapati.dev/health
+systemctl list-timers | grep certbot
 ```
+
+After the cert is issued you can re-enable the Cloudflare proxy (orange
+cloud) — but **only** if you also set Cloudflare → SSL/TLS → Overview to
+**Full (strict)**. Anything else either breaks the connection or strips
+end-to-end encryption.
 
 ---
 
 ## 10. Smoke test from your machine
 
 ```bash
-curl https://brain.yourdomain.com/health
+curl https://brain.jayprajapati.dev/health
 
-curl -X POST https://brain.yourdomain.com/v1/llm/ping \
+curl -X POST https://brain.jayprajapati.dev/v1/llm/ping \
   -H "Authorization: Bearer $BRAIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"llm":{"provider":"ollama_cloud"}}'
 ```
 
-Then point the portfolio backend at it by setting `BRAIN_BASE_URL=https://brain.yourdomain.com`
+Then point the portfolio backend at it by setting `BRAIN_BASE_URL=https://brain.jayprajapati.dev`
 and `BRAIN_API_KEY=<the secret you generated>` in its env.
 
 ---
@@ -262,12 +288,12 @@ and `BRAIN_API_KEY=<the secret you generated>` in its env.
 ## 11. Deploying updates
 
 ```bash
-ssh brain@<droplet-ip>
-cd /opt/brain
+ssh root@<droplet-ip>
+cd /root/Brain
 git pull
 source .venv/bin/activate
 pip install -r requirements.txt   # only if requirements.txt changed
-sudo systemctl restart brain
+systemctl restart brain
 journalctl -u brain -n 50 --no-pager
 ```
 
