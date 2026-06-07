@@ -9,4 +9,5 @@ fastembed
 numpy
 python-multipart
 pypdf
+pdfplumber
 python-docx
