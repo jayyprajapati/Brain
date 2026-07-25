@@ -1,0 +1,44 @@
+# Brain — a PROJECT stack. Lives at /srv/brain on the server.
+#
+# It relies on the shared infra stack (/srv/infra) being up FIRST: it uses the shared `qdrant`
+# (reached over the internal `data` network) and is exposed to the internet ONLY through the shared
+# `caddy` (reached over the `web` network). No ports are published here — Caddy terminates TLS and
+# proxies brain.jayprajapati.dev -> brain-backend:8000. DocLens also reaches it in-cluster as
+# http://brain-backend:8000 (both stacks share these networks).
+#
+# The image is built in CI (GitHub Actions -> GHCR), NOT on the server. The server only pulls:
+#   cd /srv/brain
+#   docker login ghcr.io -u <github-user>        # once, PAT with read:packages
+#   docker compose pull
+#   docker compose up -d
+#   docker compose logs -f backend
+#
+# Secrets are read from ./brain.env (NOT committed — see brain.env.example).
+name: brain
+
+services:
+  backend:
+    image: ghcr.io/jayyprajapati/brain-backend:latest
+    container_name: brain-backend
+    env_file:
+      - ./brain.env
+    restart: unless-stopped
+    networks:
+      - web # shared caddy reaches it (brain-backend:8000); also how DocLens reaches it in-cluster
+      - data # reach the shared qdrant
+    healthcheck:
+      # slim image has no wget/curl — probe /health with Python's stdlib.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s # first boot warms the embedding + reranker models
+
+# Both networks are created by the shared infra stack (/srv/infra); we only join them.
+networks:
+  web:
+    external: true
+    name: web
+  data:
+    external: true
+    name: data

@@ -1,0 +1,16 @@
+.venv/
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+.env.*
+brain.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+.DS_Store
+DEPLOY.md
+README.md

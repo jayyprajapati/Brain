@@ -1,6 +1,7 @@
 """Orchestration: ingest, retrieve, query-contextualization, and chat."""
 from __future__ import annotations
 
+import logging
 from typing import AsyncIterator
 
 import numpy as np
@@ -10,6 +11,8 @@ from .chunking import chunk_text
 from .config import settings
 from .prompts import QUERY_REWRITE_PROMPT, build_chat_system
 from .schemas import Message
+
+logger = logging.getLogger("brain")
 
 # Payload keys Brain owns — caller metadata may never override these.
 _RESERVED_KEYS = {"text", "heading", "urls", "chunk_index", "doc_id", "namespace"}
@@ -109,9 +112,15 @@ def retrieve(
     hits = vectorstore.search(app_name, query_vec, doc_ids, limit, namespace=namespace)
     if not hits:
         return []
-    scores = reranker.rerank(search_query, [h.text for h in hits])
-    ranked = sorted(zip(hits, scores), key=lambda pair: pair[1], reverse=True)
-    return [hit for hit, _ in ranked[: settings.rerank_top_n]]
+    try:
+        scores = reranker.rerank(search_query, [h.text for h in hits])
+        ranked = sorted(zip(hits, scores), key=lambda pair: pair[1], reverse=True)
+        hits = [hit for hit, _ in ranked]
+    except Exception:  # noqa: BLE001 — reranker unavailable (e.g. model not yet downloaded)
+        # Fall back to vector-search order rather than failing the request; Qdrant
+        # already returns hits by descending similarity.
+        logger.warning("reranker unavailable; falling back to vector-search order", exc_info=True)
+    return hits[: settings.rerank_top_n]
 
 
 async def chat(

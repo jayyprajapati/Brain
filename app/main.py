@@ -34,10 +34,16 @@ logger = logging.getLogger("brain")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm the local models. Qdrant collections are created lazily per app on first
-    # ingest, so there's nothing collection-specific to set up here.
-    embeddings.warmup()
-    reranker.warmup()
+    # Warm the local models so the first request isn't slow. Qdrant collections are
+    # created lazily per app on first ingest, so there's nothing collection-specific
+    # to set up here. A transient model-download failure (e.g. a HuggingFace Hub 5xx)
+    # must NOT crash the service — the models load lazily and retry on first use once
+    # the Hub recovers, and endpoints that don't need them stay available meanwhile.
+    for label, warm in (("embeddings", embeddings.warmup), ("reranker", reranker.warmup)):
+        try:
+            warm()
+        except Exception:  # noqa: BLE001 — degrade, don't abort startup
+            logger.exception("Model warmup failed for %s; will load lazily on first request", label)
     yield
 
 

@@ -1,13 +1,69 @@
-# Deploying Brain to a DigitalOcean Droplet
+# Deploying Brain
 
-This guide walks through deploying the Brain FastAPI service to a fresh
-DigitalOcean droplet, fronted by Nginx with a Let's Encrypt TLS cert and
-managed by `systemd`. The service runs as `root` from `/root/Brain` — fine
-for a single-purpose droplet.
+**Current: Hetzner shared-infra stack (Docker).** Brain runs as a container at
+`/srv/brain`, fronted by the shared Caddy, using the self-hosted Qdrant in the
+shared infra stack (`/srv/infra`). The image is built in CI (GitHub Actions →
+GHCR) and only *pulled* on the server — the box never compiles. See
+[§ Hetzner (current)](#hetzner-current).
 
-Brain is a thin stateless API — Qdrant Cloud and Ollama Cloud are external,
-so the droplet only runs the Python process. The first start downloads the
-embedding + reranker ONNX models (~500 MB), so size accordingly.
+The old DigitalOcean droplet guide (Nginx + systemd + Qdrant Cloud) is kept below
+as [§ Legacy](#legacy-digitalocean-droplet) for reference / disaster recovery.
+
+---
+
+## Hetzner (current)
+
+Prereqs: the shared infra stack is up (`/srv/infra` → caddy + postgres + redis +
+mongo + **qdrant**). If Qdrant/Mongo aren't there yet, refresh the infra from the
+Settl repo's `deploy/infra/` and `docker compose up -d` — see that repo's
+`DEPLOYMENT.md`.
+
+### 1. DNS
+Point `brain.jayprajapati.dev` (A record) at the server IP. On Cloudflare set it
+**DNS only (grey cloud)** so Caddy can obtain a Let's Encrypt cert.
+
+### 2. Caddy route
+The shared `/srv/infra/Caddyfile` already includes:
+```
+brain.jayprajapati.dev { reverse_proxy brain-backend:8000 }
+```
+If missing, add it and `cd /srv/infra && docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`.
+
+### 3. Deploy the container
+```bash
+sudo mkdir -p /srv/brain && sudo chown deploy:deploy /srv/brain
+cp ~/Brain/docker-compose.yml /srv/brain/
+cp ~/Brain/brain.env.example /srv/brain/brain.env && chmod 600 /srv/brain/brain.env
+nano /srv/brain/brain.env   # BRAIN_API_KEY (shared w/ DocLens), OLLAMA_API_KEY, QDRANT_URL=http://qdrant:6333
+cd /srv/brain
+docker login ghcr.io -u jayyprajapati   # once, PAT with read:packages
+docker compose pull && docker compose up -d
+docker compose logs -f backend          # first boot warms the ONNX models (~baked, so fast)
+```
+Qdrant collections are created lazily per `app_name` on first ingest — nothing to
+pre-create.
+
+### 4. Smoke test
+```bash
+curl https://brain.jayprajapati.dev/health
+curl -X POST https://brain.jayprajapati.dev/v1/llm/ping \
+  -H "Authorization: Bearer $BRAIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"llm":{"provider":"ollama_cloud"}}'
+```
+
+### 5. Shipping updates
+Push to `main` → **Publish Backend Image** builds & pushes to GHCR. Then GitHub →
+Actions → **Deploy Backend** → Run workflow (or on the server: `cd /srv/brain &&
+docker compose pull && docker compose up -d`). Env-only change: edit
+`/srv/brain/brain.env`, then `docker compose up -d` (a plain restart won't re-read env).
+
+---
+
+## Legacy (DigitalOcean droplet)
+
+> Superseded by the Hetzner Docker flow above. Kept for reference. This runs the
+> Brain FastAPI service on a fresh DigitalOcean droplet, fronted by Nginx with a
+> Let's Encrypt TLS cert and managed by `systemd`, using **Qdrant Cloud**.
 
 ---
 

@@ -13,6 +13,8 @@ ENV/
 .env
 .env.*
 !.env.example
+# Server-side project env (real secrets; the .example is committed)
+brain.env
 
 # FastAPI / Uvicorn logs
 *.log
@@ -68,9 +70,6 @@ media/
 
 # Local development
 local_settings.py
-
-# Docker
-.dockerignore
 
 # Jupyter Notebook
 .ipynb_checkpoints/
