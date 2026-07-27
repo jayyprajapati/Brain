@@ -185,6 +185,8 @@ def _ollama_payload(model, system, user, response_format, max_tokens, temperatur
     }
     if response_format == "json":
         payload["format"] = "json"
+    # Keep the model warm between requests to cut Ollama Cloud time-to-first-token.
+    payload["keep_alive"] = settings.ollama_keep_alive
     options: dict[str, Any] = {}
     if max_tokens:
         options["num_predict"] = max_tokens
@@ -274,6 +276,9 @@ async def chat_stream(
         "model": resolved_model,
         "messages": [{"role": "system", "content": system}, *messages],
         "stream": True,
+        # Keep the model warm (top-level) and pin a grounded generation temperature.
+        "keep_alive": settings.ollama_keep_alive,
+        "options": {"temperature": settings.chat_temperature},
     }
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         async with client.stream("POST", f"{base}/api/chat", json=payload, headers=headers) as resp:

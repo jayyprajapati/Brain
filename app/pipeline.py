@@ -90,7 +90,15 @@ async def contextualize(messages: list[Message], model: str | None = None) -> st
     history = "\n".join(f"{m.role}: {m.content}" for m in prior[-6:])
     user = f"Conversation so far:\n{history}\n\nLatest message: {latest}"
     try:
-        rewritten = (await llm.generate(QUERY_REWRITE_PROMPT, user, model=model)).strip()
+        rewritten = (
+            await llm.generate(
+                QUERY_REWRITE_PROMPT,
+                user,
+                model=settings.query_rewrite_model,
+                max_tokens=64,
+                temperature=0.0,
+            )
+        ).strip()
         return rewritten or latest
     except Exception:
         # Never let query rewriting break a chat — fall back to the raw message.

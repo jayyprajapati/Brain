@@ -13,7 +13,15 @@ class Settings(BaseSettings):
     # Ollama Cloud (LLM)
     ollama_api_key: str = ""
     ollama_base_url: str = "https://ollama.com"
-    chat_model: str = "gpt-oss:120b"
+    chat_model: str = "gpt-oss:20b"
+    # Small/fast model used only for the query-contextualization (rewrite) step.
+    query_rewrite_model: str = "gpt-oss:20b"
+    # How long Ollama Cloud keeps the model resident between requests (keeps it
+    # warm so time-to-first-token stays low on the free tier).
+    ollama_keep_alive: str = "30m"
+    # Explicit generation temperature for streaming chat replies — slightly varied
+    # but still grounded, instead of relying on the provider default.
+    chat_temperature: float = 0.6
 
     # Qdrant Cloud — one collection per app. The collection name is derived from
     # the request's `app_name` (optionally namespaced by this prefix), so each app's
@@ -27,7 +35,7 @@ class Settings(BaseSettings):
     rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
 
     # Retrieval + chunking
-    retrieve_top_k: int = 25
+    retrieve_top_k: int = 12
     rerank_top_n: int = 5
     # Ingest-time dedup: a candidate chunk whose cosine to an existing chunk in the
     # same namespace meets/exceeds this is treated as a duplicate and skipped.
