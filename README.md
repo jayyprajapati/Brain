@@ -85,3 +85,17 @@ follow-ups into a standalone query, then retrieves, reranks, and streams.
 Errors arrive as `error` (`{message}`).
 
 Conversation context is **stateless**: send the recent `messages` on every turn.
+
+## Evaluation
+
+`scripts/eval.py` runs a per-app golden set of queries against the live
+pipeline and scores retrieval recall/MRR and (optionally) LLM-judged citation
+faithfulness, so a chunking/reranking/prompt/model change can be checked
+against a baseline instead of eyeballed:
+
+```bash
+python scripts/eval.py --app portfolio
+```
+
+See `eval/goldens/README.md` for the golden-set format. Runs in-process
+against Brain's own `.env`, no server needs to be running.

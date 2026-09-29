@@ -104,6 +104,15 @@ def _json_nudge(system: str, response_format: str) -> str:
     return f"{system}\n\n{suffix}" if system else suffix
 
 
+def _usage(input_tokens, output_tokens, cached_input_tokens=None) -> dict:
+    """Normalized token usage as reported by the provider (0 when it didn't say)."""
+    return {
+        "input_tokens": int(input_tokens or 0),
+        "output_tokens": int(output_tokens or 0),
+        "cached_input_tokens": int(cached_input_tokens or 0),
+    }
+
+
 # ── Per-provider request builders ────────────────────────────────────────────
 
 
@@ -127,7 +136,7 @@ async def _post(url: str, *, headers: dict, payload: dict, provider: str) -> dic
     return resp.json()
 
 
-async def _openai_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> str:
+async def _openai_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> tuple[str, dict]:
     if not cfg["api_key"]:
         raise LLMError("openai requires an api_key", status=400, provider="openai")
     base = cfg["base_url"] or "https://api.openai.com"
@@ -148,10 +157,12 @@ async def _openai_generate(cfg, system, user, model, response_format, max_tokens
         provider="openai",
     )
     choices = data.get("choices") or [{}]
-    return (choices[0].get("message") or {}).get("content", "") or ""
+    u = data.get("usage") or {}
+    usage = _usage(u.get("prompt_tokens"), u.get("completion_tokens"), (u.get("prompt_tokens_details") or {}).get("cached_tokens"))
+    return (choices[0].get("message") or {}).get("content", "") or "", usage
 
 
-async def _anthropic_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> str:
+async def _anthropic_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> tuple[str, dict]:
     if not cfg["api_key"]:
         raise LLMError("anthropic requires an api_key", status=400, provider="anthropic")
     base = cfg["base_url"] or "https://api.anthropic.com"
@@ -174,7 +185,13 @@ async def _anthropic_generate(cfg, system, user, model, response_format, max_tok
         provider="anthropic",
     )
     parts = data.get("content") or []
-    return "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    u = data.get("usage") or {}
+    usage = _usage(
+        (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0),
+        u.get("output_tokens"),
+        u.get("cache_read_input_tokens"),
+    )
+    return "".join(p.get("text", "") for p in parts if isinstance(p, dict)), usage
 
 
 def _ollama_payload(model, system, user, response_format, max_tokens, temperature, stream) -> dict:
@@ -207,15 +224,48 @@ def _ollama_target(cfg) -> tuple[str, dict]:
     return base, ({"Authorization": f"Bearer {key}"} if key else {})
 
 
-async def _ollama_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> str:
+async def _ollama_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> tuple[str, dict]:
     base, headers = _ollama_target(cfg)
     headers = {**headers, "Content-Type": "application/json"}
     payload = _ollama_payload(model, system, user, response_format, max_tokens, temperature, stream=False)
     data = await _post(f"{base}/api/chat", headers=headers, payload=payload, provider=cfg["provider"])
-    return (data.get("message") or {}).get("content", "") or ""
+    usage = _usage(data.get("prompt_eval_count"), data.get("eval_count"))
+    return (data.get("message") or {}).get("content", "") or "", usage
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
+
+
+async def generate_with_usage(
+    system: str,
+    user: str,
+    *,
+    model: str | None = None,
+    llm: dict | None = None,
+    response_format: str = "text",
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> tuple[str, dict]:
+    """Single-shot, non-streaming completion across any supported provider.
+
+    Returns ``(text, usage)`` where usage is ``{provider, model, input_tokens,
+    output_tokens, cached_input_tokens}`` as reported by the provider.
+    ``model`` is a convenience override that wins over ``llm['model']``."""
+    cfg = _normalize(llm)
+    provider = cfg["provider"]
+    if provider not in SUPPORTED_PROVIDERS:
+        raise LLMError(f"unsupported provider '{provider}'", status=400, provider=provider)
+    resolved_model = _resolve_model(cfg, model)
+    system = _json_nudge(system, response_format)
+
+    if provider == "openai":
+        fn = _openai_generate
+    elif provider == "anthropic":
+        fn = _anthropic_generate
+    else:
+        fn = _ollama_generate
+    text, usage = await fn(cfg, system, user, resolved_model, response_format, max_tokens, temperature)
+    return text, {"provider": provider, "model": resolved_model, **usage}
 
 
 async def generate(
@@ -228,21 +278,12 @@ async def generate(
     max_tokens: int | None = None,
     temperature: float | None = None,
 ) -> str:
-    """Single-shot, non-streaming completion across any supported provider.
-
-    ``model`` is a convenience override that wins over ``llm['model']``."""
-    cfg = _normalize(llm)
-    provider = cfg["provider"]
-    if provider not in SUPPORTED_PROVIDERS:
-        raise LLMError(f"unsupported provider '{provider}'", status=400, provider=provider)
-    resolved_model = _resolve_model(cfg, model)
-    system = _json_nudge(system, response_format)
-
-    if provider == "openai":
-        return await _openai_generate(cfg, system, user, resolved_model, response_format, max_tokens, temperature)
-    if provider == "anthropic":
-        return await _anthropic_generate(cfg, system, user, resolved_model, response_format, max_tokens, temperature)
-    return await _ollama_generate(cfg, system, user, resolved_model, response_format, max_tokens, temperature)
+    """Text-only convenience wrapper over :func:`generate_with_usage`."""
+    text, _ = await generate_with_usage(
+        system, user, model=model, llm=llm, response_format=response_format,
+        max_tokens=max_tokens, temperature=temperature,
+    )
+    return text
 
 
 async def ping(llm: dict | None = None) -> dict:

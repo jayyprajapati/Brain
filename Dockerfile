@@ -27,5 +27,14 @@ RUN python -c "from app.embeddings import warmup; warmup()" \
     && python -c "from app.reranker import warmup; warmup()"
 
 EXPOSE 8000
+# --workers 2 (was 1): the 2026-08-15 load test found --workers 1 serializes CPU-bound
+# fastembed embed + cross-encoder rerank calls on one event loop, capping /v1/retrieve
+# throughput at ~7 rps and pushing p50 to 17s at 100 concurrent. Each worker loads its
+# own copy of both ONNX models — measured ~0.9-1.2 GiB RSS per warmed worker (locally
+# and on the production container). Kept at 2, NOT the DEPLOY.md "1 per GB, capped at
+# vCPUs" rule of thumb literally (which would suggest 4) — the Hetzner box is 8GB RAM /
+# 4 vCPU shared with ~6 other projects' containers, and Brain already runs the single
+# largest per-container memory footprint on that box. See TEST_RESULTS.md for the
+# measurements this is based on. UNCOMMITTED / pending review — see TEST_RESULTS.md.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
+     "--workers", "2", "--proxy-headers", "--forwarded-allow-ips=*"]

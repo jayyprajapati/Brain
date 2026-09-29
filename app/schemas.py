@@ -32,9 +32,19 @@ class GenerateRequest(BaseModel):
     temperature: Optional[float] = None
 
 
+class LLMUsage(BaseModel):
+    """Token usage as reported by the upstream provider (0 = not reported)."""
+    provider: str = ""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+
+
 class GenerateResponse(BaseModel):
     text: str
     json_value: Optional[Any] = Field(default=None, alias="json")
+    usage: Optional[LLMUsage] = None
 
     model_config = {"populate_by_name": True}
 

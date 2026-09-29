@@ -1,0 +1,30 @@
+# Brain — LOCAL development Qdrant.
+#
+# Brings up a persistent, self-hosted Qdrant (the same engine production uses on the
+# shared Hetzner /srv/infra stack) so local dev never points at Qdrant Cloud or any
+# other cloud vector store. Data survives container restarts via a named volume —
+# this is NOT a throwaway/ephemeral instance.
+#
+#     docker compose -f docker-compose.dev.yml up -d
+#
+# Then in Brain's local .env:
+#     QDRANT_URL=http://localhost:6333
+#     QDRANT_API_KEY=            # blank — local self-hosted Qdrant has no auth
+#
+# Production reaches its own separate Qdrant (also self-hosted, on /srv/infra) over
+# the internal `data` Docker network as host "qdrant" — this compose file has no
+# effect on and shares no data with that instance. See DEPLOY.md.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: brain-dev-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # HTTP/REST — what Brain's QDRANT_URL talks to
+      - "6334:6334" # gRPC — unused by Brain today, exposed for parity/tools
+    volumes:
+      - brain-dev-qdrant:/qdrant/storage
+
+volumes:
+  brain-dev-qdrant:

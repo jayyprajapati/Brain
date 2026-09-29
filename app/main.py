@@ -96,7 +96,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
         user = f"Structured data:\n{data_text}" if data_text is not None else "."
 
     try:
-        text = await llm.generate(
+        text, usage = await llm.generate_with_usage(
             system,
             user,
             llm=_llm_dict(req.llm),
@@ -112,8 +112,8 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             parsed = llm.parse_json(text)
         except llm.LLMError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
-        return GenerateResponse(text=text, **{"json": parsed})
-    return GenerateResponse(text=text)
+        return GenerateResponse(text=text, usage=usage, **{"json": parsed})
+    return GenerateResponse(text=text, usage=usage)
 
 
 @app.post("/v1/llm/ping", response_model=PingResponse, dependencies=[Depends(require_api_key)])

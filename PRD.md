@@ -3,7 +3,7 @@
 **Version:** 2.0.0
 **Status:** Live in production (Hetzner)
 **Owner:** Jay Prajapati
-**Last updated:** 2026-07-25
+**Last updated:** 2026-08-06
 
 ---
 
@@ -202,6 +202,14 @@ Provider keys are **never read from Brain's environment** except the built-in Ol
 ### 8.10 Health check (`GET /health`, unauthenticated)
 Returns `{status, chat_model, embed_model, providers}` — intended as an uptime-monitoring and smoke-test target.
 
+### 8.11 Retrieval & faithfulness eval harness (`scripts/eval.py`)
+A standing, per-app golden set (`eval/goldens/<app_name>.json`) run against the live pipeline in-process — not an HTTP client, not a test double. For each case it scores:
+- **Recall@k / MRR** — whether the case's `expected_doc_ids` actually came back from `pipeline.retrieve()`, and how high the first one ranked.
+- **Keyword coverage** — a cheap fallback for cases without a pinned `doc_id` yet.
+- **Citation faithfulness** (opt-in per case via `check_faithfulness`) — generates an answer using the exact same system-prompt assembly `/v1/chat` uses (`prompts.build_chat_system`), then a separate LLM call judges whether every claim in that answer is actually grounded in the retrieved chunks, returning `{faithful, unsupported_claims}`.
+
+Exits non-zero when aggregate recall or faithfulness pass rate falls below configurable thresholds (`--min-recall`, `--min-faithfulness`), so it's usable as a gate, not just a report. This is the piece that catches silent RAG-quality regressions from a chunking/reranking/prompt/model change — the ones that don't throw an error, they just quietly answer worse.
+
 ---
 
 ## 9. API Reference
@@ -371,3 +379,4 @@ All settings load from environment / `.env` via `app/config.py` (`pydantic-setti
 - No built-in conversation history persistence — entirely the caller's responsibility.
 - Legacy `.doc` (binary Word) format is unsupported by design.
 - Single-region, single-instance Qdrant — no built-in vector-store replication/HA at the Brain layer (inherited from whatever the shared infra provides).
+- The eval harness (`scripts/eval.py`) is local/manual only — not yet wired into CI, since that would require provisioning Qdrant/LLM credentials as repo secrets. Golden sets also need real `doc_id`s filled in per app; only a `.example.json` template ships today.
