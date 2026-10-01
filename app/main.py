@@ -223,6 +223,9 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                 client_prompt=req.client_prompt,
                 doc_ids=req.doc_ids,
                 model=req.model,
+                raw_system=req.raw_system,
+                top_n=req.top_n,
+                temperature=req.temperature,
             ):
                 yield _sse(event, data)
         except Exception as exc:  # noqa: BLE001 — surface a clean error event

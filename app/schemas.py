@@ -126,6 +126,13 @@ class ChatRequest(BaseModel):
     client_prompt: str
     doc_ids: Optional[list[str]] = None
     model: Optional[str] = None
+    # When true, client_prompt is the COMPLETE system prompt: Brain skips its own
+    # BASE_CHAT_PROMPT / RESPONSE_REMINDER and drops the retrieved notes into a
+    # `{{context}}` placeholder (or appends them if the placeholder is absent).
+    raw_system: bool = False
+    # How many reranked chunks to hand the model (defaults to RERANK_TOP_N).
+    top_n: Optional[int] = Field(default=None, ge=1, le=30)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
 
 
 class HealthResponse(BaseModel):

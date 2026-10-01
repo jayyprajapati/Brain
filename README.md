@@ -57,7 +57,9 @@ All routes except `GET /health` require `Authorization: Bearer <BRAIN_API_KEY>`.
 | POST | `/v1/ingest` | `{app_name, doc_id, text, namespace?, dedup?, metadata?}` | `{doc_id, chunk_count, skipped_duplicates}` |
 | POST | `/v1/retrieve` | `{app_name, query, doc_ids?, namespace?, top_k?}` | `{chunks:[…]}` |
 | POST | `/v1/delete` | `{app_name, doc_id?, namespace?}` | `{ok, deleted}` |
-| POST | `/v1/chat` | `{app_name, messages, client_prompt, doc_ids?, model?}` | SSE |
+| POST | `/v1/chat` | `{app_name, messages, client_prompt, doc_ids?, model?, raw_system?, top_n?, temperature?}` | SSE |
+
+`raw_system: true` makes `client_prompt` the whole system prompt (Brain's base prompt and reminder are skipped); retrieved notes replace a `{{context}}` placeholder in it, or are appended. `top_n` (1-30) sets how many reranked chunks the model sees.
 
 `app_name` selects the app's **dedicated Qdrant collection**, so each app's
 vectors stay isolated (e.g. `app_name="portfolio"` → collection `portfolio`,

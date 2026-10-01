@@ -9,7 +9,7 @@ import numpy as np
 from . import embeddings, llm, reranker, vectorstore
 from .chunking import chunk_text
 from .config import settings
-from .prompts import QUERY_REWRITE_PROMPT, build_chat_system
+from .prompts import QUERY_REWRITE_PROMPT, build_chat_system, build_raw_system
 from .schemas import Message
 
 logger = logging.getLogger("brain")
@@ -111,12 +111,15 @@ def retrieve(
     doc_ids: list[str] | None,
     namespace: str | None = None,
     top_k: int | None = None,
+    top_n: int | None = None,
 ) -> list:
     """Embed → vector search (top-K) → cross-encoder rerank → top-N."""
     if not search_query:
         return []
     query_vec = embeddings.embed_query(search_query)
-    limit = top_k or settings.retrieve_top_k
+    keep = top_n or settings.rerank_top_n
+    # Always over-fetch relative to what we keep so the reranker has room to work.
+    limit = max(top_k or settings.retrieve_top_k, keep)
     hits = vectorstore.search(app_name, query_vec, doc_ids, limit, namespace=namespace)
     if not hits:
         return []
@@ -128,7 +131,7 @@ def retrieve(
         # Fall back to vector-search order rather than failing the request; Qdrant
         # already returns hits by descending similarity.
         logger.warning("reranker unavailable; falling back to vector-search order", exc_info=True)
-    return hits[: settings.rerank_top_n]
+    return hits[:keep]
 
 
 async def chat(
@@ -137,14 +140,20 @@ async def chat(
     client_prompt: str,
     doc_ids: list[str] | None,
     model: str | None = None,
+    raw_system: bool = False,
+    top_n: int | None = None,
+    temperature: float | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     """Yield (event, data) tuples: token* → sources → done."""
     search_query = await contextualize(messages, model=model)
-    chunks = retrieve(app_name, search_query, doc_ids)
-    system = build_chat_system(client_prompt, chunks)
+    chunks = retrieve(app_name, search_query, doc_ids, top_n=top_n)
+    if raw_system:
+        system = build_raw_system(client_prompt, chunks)
+    else:
+        system = build_chat_system(client_prompt, chunks)
     turns = [{"role": m.role, "content": m.content} for m in messages if m.content.strip()]
 
-    async for delta in llm.chat_stream(system, turns, model=model):
+    async for delta in llm.chat_stream(system, turns, model=model, temperature=temperature):
         yield "token", {"text": delta}
 
     sources = [

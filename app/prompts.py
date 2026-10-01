@@ -66,3 +66,14 @@ def build_chat_system(client_prompt: str, chunks: list) -> str:
         f"{build_context_block(chunks)}\n\n"
         f"{RESPONSE_REMINDER}"
     )
+
+
+CONTEXT_PLACEHOLDER = "{{context}}"
+
+
+def build_raw_system(client_prompt: str, chunks: list) -> str:
+    """Caller owns the whole system prompt; Brain only contributes the notes."""
+    notes = build_context_block(chunks)
+    if CONTEXT_PLACEHOLDER in client_prompt:
+        return client_prompt.replace(CONTEXT_PLACEHOLDER, notes)
+    return f"{client_prompt.rstrip()}\n\n{notes}"

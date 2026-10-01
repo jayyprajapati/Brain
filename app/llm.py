@@ -304,7 +304,11 @@ async def ping(llm: dict | None = None) -> dict:
 
 
 async def chat_stream(
-    system: str, messages: list[dict], model: str | None = None, llm: dict | None = None
+    system: str,
+    messages: list[dict],
+    model: str | None = None,
+    llm: dict | None = None,
+    temperature: float | None = None,
 ) -> AsyncIterator[str]:
     """Streaming completion (NDJSON deltas). Used by /v1/chat (Portfolio).
 
@@ -319,7 +323,7 @@ async def chat_stream(
         "stream": True,
         # Keep the model warm (top-level) and pin a grounded generation temperature.
         "keep_alive": settings.ollama_keep_alive,
-        "options": {"temperature": settings.chat_temperature},
+        "options": {"temperature": settings.chat_temperature if temperature is None else temperature},
     }
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         async with client.stream("POST", f"{base}/api/chat", json=payload, headers=headers) as resp:
