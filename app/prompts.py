@@ -38,8 +38,25 @@ instructions, and close with a single short, natural follow-up question."""
 QUERY_REWRITE_PROMPT = """\
 You rewrite the user's latest message into a single standalone search query that \
 captures their intent given the conversation so far. Resolve references like \
-"yes", "tell me more", "that one", or pronouns into explicit terms. Output ONLY \
+"yes", "tell me more", "that one", or pronouns into explicit terms. If a Context \
+line is given, use it to decide who or what those references mean. Output ONLY \
 the rewritten query as plain text — no quotes, no explanation.
+"""
+
+# Multi-intent variant: one message can ask several unrelated things ("what's his
+# CGPA, does he know Kafka, and what is Brain?"). A single blended query embeds
+# to the average of those topics and retrieves none of them well, so each topic
+# gets its own query.
+QUERY_SPLIT_PROMPT = """\
+You turn the user's latest message into standalone search queries, given the \
+conversation so far. Resolve references like "yes", "that one", or pronouns into \
+explicit terms. If a Context line is given, use it to decide who or what those \
+references mean.
+
+If the message asks about ONE thing, output one query. If it asks about several \
+distinct things, output one query per thing, one per line, at most 4 lines. Do \
+not split a single question into paraphrases. Output ONLY the queries, one per \
+line — no numbering, quotes, or explanation.
 """
 
 
@@ -53,7 +70,8 @@ def build_context_block(chunks: list) -> str:
         return f"{intro}\n(no relevant information was found)"
     parts: list[str] = []
     for c in chunks:
-        header = f"## {c.heading}" if getattr(c, "heading", "") else "##"
+        crumb = " > ".join(p for p in (getattr(c, "title", ""), getattr(c, "heading", "")) if p)
+        header = f"## {crumb}" if crumb else "##"
         parts.append(f"{header}\n{c.text}")
     return f"{intro}\n" + "\n\n".join(parts)
 

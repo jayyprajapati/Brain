@@ -168,6 +168,7 @@ async def ingest(req: IngestRequest) -> IngestResponse:
         namespace=req.namespace,
         dedup=req.dedup,
         metadata=req.metadata,
+        title=req.title,
     )
     return IngestResponse(
         doc_id=req.doc_id,
@@ -181,11 +182,16 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
     if not req.app_name.strip():
         raise HTTPException(status_code=400, detail="app_name is required")
     hits = pipeline.retrieve(
-        req.app_name, req.query, req.doc_ids, namespace=req.namespace, top_k=req.top_k
+        req.app_name, req.query, req.doc_ids, namespace=req.namespace, top_k=req.top_k,
+        top_n=req.top_n, min_score=req.min_score, score_margin=req.score_margin, min_n=req.min_n,
+        max_per_doc=req.max_per_doc,
     )
     return RetrieveResponse(
         chunks=[
-            RetrievedChunk(text=h.text, heading=h.heading, score=h.score, doc_id=h.doc_id, urls=h.urls)
+            RetrievedChunk(
+                text=h.text, heading=h.heading, score=h.score, doc_id=h.doc_id, urls=h.urls,
+                title=h.title, rerank_score=h.rerank_score,
+            )
             for h in hits
         ]
     )
@@ -226,6 +232,14 @@ async def chat(req: ChatRequest) -> StreamingResponse:
                 raw_system=req.raw_system,
                 top_n=req.top_n,
                 temperature=req.temperature,
+                top_k=req.top_k,
+                min_score=req.min_score,
+                score_margin=req.score_margin,
+                min_n=req.min_n,
+                max_per_doc=req.max_per_doc,
+                query_context=req.query_context,
+                reasoning=req.reasoning,
+                multi_query=req.multi_query,
             ):
                 yield _sse(event, data)
         except Exception as exc:  # noqa: BLE001 — surface a clean error event

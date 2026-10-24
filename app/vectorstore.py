@@ -25,6 +25,10 @@ class Hit:
     urls: list[str]
     doc_id: str
     score: float
+    # Optional document title (set when the doc was ingested with one) and the
+    # cross-encoder score once the hit has been reranked.
+    title: str = ""
+    rerank_score: float | None = None
 
 
 def _get_client() -> QdrantClient:
@@ -144,6 +148,7 @@ def search(
                 urls=payload.get("urls", []) or [],
                 doc_id=payload.get("doc_id", ""),
                 score=float(r.score),
+                title=payload.get("title", "") or "",
             )
         )
     return hits

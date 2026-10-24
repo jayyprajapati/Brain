@@ -14,6 +14,7 @@ are never read from Brain's environment except the built-in Ollama Cloud default
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any, AsyncIterator, Optional
@@ -116,15 +117,34 @@ def _usage(input_tokens, output_tokens, cached_input_tokens=None) -> dict:
 # ── Per-provider request builders ────────────────────────────────────────────
 
 
+# Ollama Cloud's free tier answers "429 too many concurrent requests" as soon
+# as a few chats overlap. Those are worth a short wait and retry, and nothing
+# has reached the caller yet when they happen.
+_RETRY_STATUSES = {429, 503}
+_RETRY_DELAYS = (1.5, 3.0)
+
+
 async def _post(url: str, *, headers: dict, payload: dict, provider: str) -> dict:
+    for delay in (*_RETRY_DELAYS, None):
+        resp = await _post_once(url, headers=headers, payload=payload, provider=provider)
+        if resp.status_code not in _RETRY_STATUSES or delay is None:
+            break
+        await asyncio.sleep(delay)
+    return _parse_response(resp, provider)
+
+
+async def _post_once(url: str, *, headers: dict, payload: dict, provider: str) -> httpx.Response:
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(url, json=payload, headers=headers)
+            return await client.post(url, json=payload, headers=headers)
     except httpx.TimeoutException as exc:
         raise LLMError(f"{provider} request timed out", status=504, provider=provider) from exc
     except httpx.RequestError as exc:
         # Connection refused / DNS / TLS — no HTTP response was received.
         raise LLMError(f"could not reach {provider}: {exc}", provider=provider) from exc
+
+
+def _parse_response(resp: httpx.Response, provider: str) -> dict:
     if resp.status_code >= 400:
         detail = resp.text
         try:
@@ -194,12 +214,14 @@ async def _anthropic_generate(cfg, system, user, model, response_format, max_tok
     return "".join(p.get("text", "") for p in parts if isinstance(p, dict)), usage
 
 
-def _ollama_payload(model, system, user, response_format, max_tokens, temperature, stream) -> dict:
+def _ollama_payload(model, system, user, response_format, max_tokens, temperature, stream, think=None) -> dict:
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "stream": stream,
     }
+    if think is not None:
+        payload["think"] = think
     if response_format == "json":
         payload["format"] = "json"
     # Keep the model warm between requests to cut Ollama Cloud time-to-first-token.
@@ -224,10 +246,63 @@ def _ollama_target(cfg) -> tuple[str, dict]:
     return base, ({"Authorization": f"Bearer {key}"} if key else {})
 
 
-async def _ollama_generate(cfg, system, user, model, response_format, max_tokens, temperature) -> tuple[str, dict]:
+# Ollama models expose reasoning differently: gpt-oss and beam take an effort
+# string ("low"/"medium"/...), nemotron and gemma take true/false, others take
+# nothing. Callers ask for an effort; this maps it onto what the model accepts
+# (read once per model from /api/show) so switching CHAT_MODEL never sends a
+# value the provider rejects.
+_THINK_VALUES: dict[str, list | None] = {}
+_EFFORT_ORDER = ("off", "low", "medium", "high", "xhigh", "max")
+
+
+async def _thinking_values(cfg: dict, model: str) -> list | None:
+    key = f"{cfg['provider']}|{cfg['base_url']}|{model}"
+    if key not in _THINK_VALUES:
+        base, headers = _ollama_target(cfg)
+        values = None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(f"{base}/api/show", json={"model": model}, headers=headers)
+                if resp.status_code < 400:
+                    data = resp.json()
+                    if "thinking" in (data.get("capabilities") or []):
+                        values = (data.get("thinking") or {}).get("values") or [True, False]
+                    else:
+                        values = []
+        except (httpx.HTTPError, ValueError):
+            return None  # unknown; retry on the next call
+        _THINK_VALUES[key] = values
+    return _THINK_VALUES[key]
+
+
+async def _resolve_think(cfg: dict, model: str, think: str | None):
+    """Map a requested effort onto the model's own ``think`` values (None = omit)."""
+    if not think:
+        return None
+    values = await _thinking_values(cfg, model)
+    if values is None:
+        # /api/show unavailable: only gpt-oss is known to take effort strings.
+        return think if model.startswith("gpt-oss") and think != "off" else None
+    if not values:
+        return None
+    if all(isinstance(v, bool) for v in values):
+        # On/off models: low effort means no thinking (rewrite, short answers).
+        return think in ("medium", "high", "xhigh", "max")
+    if think == "off":
+        return values[0] if values else None
+    if think in values:
+        return think
+    # Nearest supported effort at or below the request.
+    wanted = _EFFORT_ORDER.index(think) if think in _EFFORT_ORDER else 2
+    below = [v for v in values if v in _EFFORT_ORDER and _EFFORT_ORDER.index(v) <= wanted]
+    return below[-1] if below else values[0]
+
+
+async def _ollama_generate(cfg, system, user, model, response_format, max_tokens, temperature, think=None) -> tuple[str, dict]:
     base, headers = _ollama_target(cfg)
     headers = {**headers, "Content-Type": "application/json"}
-    payload = _ollama_payload(model, system, user, response_format, max_tokens, temperature, stream=False)
+    think = await _resolve_think(cfg, model, think)
+    payload = _ollama_payload(model, system, user, response_format, max_tokens, temperature, stream=False, think=think)
     data = await _post(f"{base}/api/chat", headers=headers, payload=payload, provider=cfg["provider"])
     usage = _usage(data.get("prompt_eval_count"), data.get("eval_count"))
     return (data.get("message") or {}).get("content", "") or "", usage
@@ -245,6 +320,7 @@ async def generate_with_usage(
     response_format: str = "text",
     max_tokens: int | None = None,
     temperature: float | None = None,
+    think: str | None = None,
 ) -> tuple[str, dict]:
     """Single-shot, non-streaming completion across any supported provider.
 
@@ -264,7 +340,9 @@ async def generate_with_usage(
         fn = _anthropic_generate
     else:
         fn = _ollama_generate
-    text, usage = await fn(cfg, system, user, resolved_model, response_format, max_tokens, temperature)
+    # ``think`` (reasoning effort) only means something to Ollama reasoning models.
+    extra = {"think": think} if think and fn is _ollama_generate else {}
+    text, usage = await fn(cfg, system, user, resolved_model, response_format, max_tokens, temperature, **extra)
     return text, {"provider": provider, "model": resolved_model, **usage}
 
 
@@ -277,11 +355,12 @@ async def generate(
     response_format: str = "text",
     max_tokens: int | None = None,
     temperature: float | None = None,
+    think: str | None = None,
 ) -> str:
     """Text-only convenience wrapper over :func:`generate_with_usage`."""
     text, _ = await generate_with_usage(
         system, user, model=model, llm=llm, response_format=response_format,
-        max_tokens=max_tokens, temperature=temperature,
+        max_tokens=max_tokens, temperature=temperature, think=think,
     )
     return text
 
@@ -309,10 +388,12 @@ async def chat_stream(
     model: str | None = None,
     llm: dict | None = None,
     temperature: float | None = None,
+    think: str | None = None,
 ) -> AsyncIterator[str]:
     """Streaming completion (NDJSON deltas). Used by /v1/chat (Portfolio).
 
-    Defaults to Brain's Ollama Cloud; honours an ``llm`` override for BYOK Ollama."""
+    Defaults to Brain's Ollama Cloud; honours an ``llm`` override for BYOK Ollama.
+    ``think`` is a reasoning effort ("off"/"low"/"medium"/"high"), mapped per model."""
     cfg = _normalize(llm)
     base, headers = _ollama_target(cfg)
     headers = {**headers, "Content-Type": "application/json"}
@@ -325,27 +406,41 @@ async def chat_stream(
         "keep_alive": settings.ollama_keep_alive,
         "options": {"temperature": settings.chat_temperature if temperature is None else temperature},
     }
+    think = await _resolve_think(cfg, resolved_model, think)
+    if think is not None:
+        payload["think"] = think
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        async with client.stream("POST", f"{base}/api/chat", json=payload, headers=headers) as resp:
-            if resp.status_code >= 400:
-                body = await resp.aread()
-                raise LLMError(
-                    f"{cfg['provider']} stream failed ({resp.status_code}): {body.decode(errors='ignore')}",
-                    status=resp.status_code,
-                    provider=cfg["provider"],
-                )
-            async for line in resp.aiter_lines():
-                if not line.strip():
+        for delay in (*_RETRY_DELAYS, None):
+            async with client.stream("POST", f"{base}/api/chat", json=payload, headers=headers) as resp:
+                if resp.status_code in _RETRY_STATUSES and delay is not None:
+                    await resp.aread()
+                    await asyncio.sleep(delay)
                     continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                delta = (obj.get("message") or {}).get("content", "")
-                if delta:
+                async for delta in _stream_deltas(resp, cfg):
                     yield delta
-                if obj.get("done"):
-                    break
+                return
+
+
+async def _stream_deltas(resp: httpx.Response, cfg: dict) -> AsyncIterator[str]:
+    if resp.status_code >= 400:
+        body = await resp.aread()
+        raise LLMError(
+            f"{cfg['provider']} stream failed ({resp.status_code}): {body.decode(errors='ignore')}",
+            status=resp.status_code,
+            provider=cfg["provider"],
+        )
+    async for line in resp.aiter_lines():
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        delta = (obj.get("message") or {}).get("content", "")
+        if delta:
+            yield delta
+        if obj.get("done"):
+            break
 
 
 async def list_models() -> list[str]:

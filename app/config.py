@@ -15,7 +15,13 @@ class Settings(BaseSettings):
     ollama_base_url: str = "https://ollama.com"
     chat_model: str = "gpt-oss:20b"
     # Small/fast model used only for the query-contextualization (rewrite) step.
-    query_rewrite_model: str = "gpt-oss:20b"
+    # nemotron-3-super (free on Ollama Cloud) splits multi-part questions as
+    # cleanly as gpt-oss:20b and answers in ~0.8 s vs ~1.8 s.
+    query_rewrite_model: str = "nemotron-3-super"
+    # Reasoning effort for the rewrite, mapped per model by llm._resolve_think:
+    # "low" turns thinking off on on/off models (nemotron, gemma) and is the
+    # lowest effort on graded ones (gpt-oss). Blank sends no `think` field.
+    query_rewrite_think: str = "low"
     # How long Ollama Cloud keeps the model resident between requests (keeps it
     # warm so time-to-first-token stays low on the free tier).
     ollama_keep_alive: str = "30m"

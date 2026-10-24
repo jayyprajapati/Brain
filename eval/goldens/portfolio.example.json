@@ -1,0 +1,25 @@
+{
+  "app_name": "portfolio",
+  "client_prompt": "PLACEHOLDER — paste the exact client_prompt Portfolio sends to /v1/chat here (see the portfolio repo's admin/AI config). Only needed for cases with check_faithfulness: true.",
+  "cases": [
+    {
+      "id": "current-role",
+      "query": "What do you do for work right now?",
+      "expected_doc_ids": ["REPLACE_WITH_REAL_DOC_ID"],
+      "expected_keywords": ["Microchip", "Software Engineer"],
+      "check_faithfulness": true
+    },
+    {
+      "id": "contact-link",
+      "query": "How can I reach you?",
+      "expected_keywords": ["github", "linkedin"],
+      "check_faithfulness": false
+    },
+    {
+      "id": "unrelated-question",
+      "query": "What's your favorite way to cook rice?",
+      "expected_keywords": [],
+      "check_faithfulness": true
+    }
+  ]
+}

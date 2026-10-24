@@ -1,5 +1,5 @@
 """Request/response models for the Brain API."""
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -70,6 +70,9 @@ class IngestRequest(BaseModel):
     dedup: bool = False
     # Extra payload fields stored on every chunk (reserved keys are ignored).
     metadata: Optional[dict] = None
+    # Optional document title. When set, chunks are embedded and reranked with
+    # a "title > heading" breadcrumb (contextual chunk headers).
+    title: Optional[str] = Field(default=None, max_length=200)
 
 
 class IngestResponse(BaseModel):
@@ -93,6 +96,14 @@ class RetrieveRequest(BaseModel):
     doc_ids: Optional[list[str]] = None
     namespace: Optional[str] = None
     top_k: Optional[int] = None
+    top_n: Optional[int] = Field(default=None, ge=1, le=30)
+    # Dynamic K (opt-in, see pipeline.retrieve): cut the reranked list where
+    # relevance falls off. Scores are raw cross-encoder logits.
+    min_score: Optional[float] = None
+    score_margin: Optional[float] = Field(default=None, ge=0.0)
+    min_n: int = Field(default=0, ge=0, le=30)
+    # Cap on chunks from any one document (diversity). Omitted = no cap.
+    max_per_doc: Optional[int] = Field(default=None, ge=1, le=30)
 
 
 class RetrievedChunk(BaseModel):
@@ -101,6 +112,8 @@ class RetrievedChunk(BaseModel):
     score: float = 0.0
     doc_id: str = ""
     urls: list[str] = Field(default_factory=list)
+    title: str = ""
+    rerank_score: Optional[float] = None
 
 
 class RetrieveResponse(BaseModel):
@@ -133,6 +146,25 @@ class ChatRequest(BaseModel):
     # How many reranked chunks to hand the model (defaults to RERANK_TOP_N).
     top_n: Optional[int] = Field(default=None, ge=1, le=30)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    # Vector-search candidates handed to the reranker (defaults to RETRIEVE_TOP_K).
+    top_k: Optional[int] = Field(default=None, ge=1, le=100)
+    # Optional hint for the query rewriter (who "he"/"it" refers to, the domain).
+    # When set, even a first message is rewritten before retrieval.
+    query_context: Optional[str] = Field(default=None, max_length=1000)
+    # Reasoning effort for reasoning models on Ollama, mapped onto whatever the
+    # model accepts (effort string or on/off). Lower = faster first token.
+    # Omitted = provider default.
+    reasoning: Optional[Literal["off", "low", "medium", "high"]] = None
+    # Split a multi-part question into one search query per part and merge the
+    # results, so every part gets grounding. Opt-in.
+    multi_query: bool = False
+    # Dynamic K (opt-in, see pipeline.retrieve): cut the reranked list where
+    # relevance falls off. Scores are raw cross-encoder logits.
+    min_score: Optional[float] = None
+    score_margin: Optional[float] = Field(default=None, ge=0.0)
+    min_n: int = Field(default=0, ge=0, le=30)
+    # Cap on chunks from any one document (diversity). Omitted = no cap.
+    max_per_doc: Optional[int] = Field(default=None, ge=1, le=30)
 
 
 class HealthResponse(BaseModel):

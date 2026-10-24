@@ -39,6 +39,9 @@ _HR_RE = re.compile(r"^\s*([-*_=])\1{2,}\s*$")
 # A document-separator delimiter wrapping a label, e.g. "===== identity.md =====".
 # Captures the label so it can become a readable heading for the section below.
 _DOC_DELIM_RE = re.compile(r"^\s*={2,}\s*(\S.*?\S)\s*={2,}\s*$")
+# A line that is only bold text, e.g. "**Retrieval quality (50 queries)**": a
+# label for the block below it, not a block of its own.
+_BOLD_LABEL_RE = re.compile(r"^\s*(\*\*|__)[^*_].*\1\s*:?\s*$")
 # Word tokens, for the meaningful-content guard.
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 # Sentence boundary: end punctuation followed by whitespace + capital/quote/digit.
@@ -107,6 +110,10 @@ def _split_blocks(text: str) -> list[tuple[str, str]]:
             flush()
             continue
         if not raw_line.strip():
+            # Keep a lone bold label attached to the list/paragraph it introduces,
+            # so "Mean MRR: 0.915" stays next to "Retrieval quality".
+            if len(buffer) == 1 and _BOLD_LABEL_RE.match(buffer[0]):
+                continue
             flush()
             continue
         buffer.append(raw_line.strip())
