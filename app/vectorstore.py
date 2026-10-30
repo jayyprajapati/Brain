@@ -29,6 +29,7 @@ class Hit:
     # cross-encoder score once the hit has been reranked.
     title: str = ""
     rerank_score: float | None = None
+    chunk_index: int | None = None
 
 
 def _get_client() -> QdrantClient:
@@ -149,6 +150,7 @@ def search(
                 doc_id=payload.get("doc_id", ""),
                 score=float(r.score),
                 title=payload.get("title", "") or "",
+                chunk_index=payload.get("chunk_index"),
             )
         )
     return hits

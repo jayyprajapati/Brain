@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import embeddings, extract as extractor, llm, pipeline, reranker, vectorstore
 from .auth import require_api_key
@@ -103,6 +104,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             response_format=req.response_format,
             max_tokens=req.max_tokens,
             temperature=req.temperature,
+            think=req.reasoning,
         )
     except llm.LLMError as exc:
         raise _llm_http_error(exc)
@@ -134,20 +136,29 @@ async def extract(
     ingest: bool = Form(False),
     dedup: bool = Form(False),
 ) -> ExtractResponse:
-    data = await file.read()
+    cap = settings.max_extract_mb * 1024 * 1024
+    data = await file.read(cap + 1)
     if not data:
         raise HTTPException(status_code=400, detail="empty file")
+    if len(data) > cap:
+        raise HTTPException(status_code=413, detail=f"file larger than {settings.max_extract_mb} MB")
+    # Parsing and embedding are CPU-bound: run them in the threadpool so one large document
+    # can't block this worker's event loop (and every other app's requests with it).
     try:
-        text = extractor.extract_text(data, filename=file.filename or "", content_type=file.content_type or "")
+        text = await run_in_threadpool(
+            extractor.extract_text, data, filename=file.filename or "", content_type=file.content_type or ""
+        )
     except extractor.ExtractionError as exc:
         raise HTTPException(status_code=415, detail=str(exc))
+    if len(text) > settings.max_ingest_chars:
+        raise HTTPException(status_code=413, detail=f"document text exceeds {settings.max_ingest_chars} characters")
 
     result = ExtractResponse(text=text, char_count=len(text))
     if ingest:
         if not app_name.strip():
             raise HTTPException(status_code=400, detail="app_name is required to ingest")
         did = doc_id or str(uuid.uuid4())
-        ing = pipeline.ingest(app_name, did, text, namespace=namespace or None, dedup=dedup)
+        ing = await run_in_threadpool(pipeline.ingest, app_name, did, text, namespace=namespace or None, dedup=dedup)
         result.doc_id = did
         result.chunk_count = ing["chunk_count"]
         result.skipped_duplicates = ing["skipped_duplicates"]
@@ -155,12 +166,16 @@ async def extract(
     return result
 
 
+# Sync handlers (def, not async def) run in FastAPI's threadpool: embedding, reranking and vector
+# I/O are blocking, and on the event loop they would stall every concurrent request.
 @app.post("/v1/ingest", response_model=IngestResponse, dependencies=[Depends(require_api_key)])
-async def ingest(req: IngestRequest) -> IngestResponse:
+def ingest(req: IngestRequest) -> IngestResponse:
     if not req.app_name.strip():
         raise HTTPException(status_code=400, detail="app_name is required")
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
+    if len(req.text) > settings.max_ingest_chars:
+        raise HTTPException(status_code=413, detail=f"text exceeds {settings.max_ingest_chars} characters")
     result = pipeline.ingest(
         req.app_name,
         req.doc_id,
@@ -178,7 +193,7 @@ async def ingest(req: IngestRequest) -> IngestResponse:
 
 
 @app.post("/v1/retrieve", response_model=RetrieveResponse, dependencies=[Depends(require_api_key)])
-async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
+def retrieve(req: RetrieveRequest) -> RetrieveResponse:
     if not req.app_name.strip():
         raise HTTPException(status_code=400, detail="app_name is required")
     hits = pipeline.retrieve(
@@ -190,7 +205,7 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
         chunks=[
             RetrievedChunk(
                 text=h.text, heading=h.heading, score=h.score, doc_id=h.doc_id, urls=h.urls,
-                title=h.title, rerank_score=h.rerank_score,
+                title=h.title, rerank_score=h.rerank_score, chunk_index=h.chunk_index,
             )
             for h in hits
         ]
@@ -198,7 +213,7 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
 
 
 @app.post("/v1/delete", response_model=DeleteResponse, dependencies=[Depends(require_api_key)])
-async def delete(req: DeleteRequest) -> DeleteResponse:
+def delete(req: DeleteRequest) -> DeleteResponse:
     if not req.app_name.strip():
         raise HTTPException(status_code=400, detail="app_name is required")
     if not req.doc_id and not req.namespace:

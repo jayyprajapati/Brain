@@ -30,6 +30,9 @@ class GenerateRequest(BaseModel):
     response_format: str = "text"
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
+    # Reasoning effort for Ollama reasoning models (mapped per model, see llm._resolve_think).
+    # Omitted = provider default, so existing callers are unaffected.
+    reasoning: Optional[Literal["off", "low", "medium", "high"]] = None
 
 
 class LLMUsage(BaseModel):
@@ -114,6 +117,8 @@ class RetrievedChunk(BaseModel):
     urls: list[str] = Field(default_factory=list)
     title: str = ""
     rerank_score: Optional[float] = None
+    # Position of the chunk within its document (additive; lets callers order chunks).
+    chunk_index: Optional[int] = None
 
 
 class RetrieveResponse(BaseModel):

@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # value but would otherwise become their own vectors.
     chunk_min_content_words: int = 3
 
+    # Input ceilings (shared service: one caller's huge document must not exhaust CPU/RAM for
+    # everyone). DocLens sends at most ~2M chars; Portfolio's knowledge base is far smaller.
+    max_extract_mb: int = 30
+    max_ingest_chars: int = 3_000_000
+
 
 @lru_cache
 def get_settings() -> Settings:

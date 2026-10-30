@@ -1,6 +1,7 @@
 """Orchestration: ingest, retrieve, query-contextualization, and chat."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import AsyncIterator
@@ -276,8 +277,9 @@ async def chat(
     """Yield (event, data) tuples: token* → sources → done."""
     queries = await contextualize_many(messages, model=model, query_context=query_context, split=multi_query)
     search_query = " | ".join(queries)
-    chunks = retrieve_many(
-        app_name, queries, doc_ids, top_k=top_k, top_n=top_n,
+    # embedding + rerank are CPU-bound: off the event loop so concurrent streams keep flowing
+    chunks = await asyncio.to_thread(
+        retrieve_many, app_name, queries, doc_ids, top_k=top_k, top_n=top_n,
         min_score=min_score, score_margin=score_margin, min_n=min_n, max_per_doc=max_per_doc,
     )
     if raw_system:
